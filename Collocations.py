@@ -1,0 +1,187 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+# In[2]:
+
+
+import subprocess
+
+required_packages = ["tkinter", "tkinterdnd2", "pandas", "nltk", "pymorphy2"]
+
+for package in required_packages:
+    try:
+        exec(f"import {package}")
+    except ImportError:
+        subprocess.call(f"pip3 install {package}", shell=True)
+        exec(f"import {package}")
+
+import tkinter as tk
+from tkinter import scrolledtext, simpledialog, messagebox
+from tkinterdnd2 import DND_FILES, TkinterDnD
+from tkinter.filedialog import askopenfilename
+import os
+import nltk
+from nltk.collocations import BigramCollocationFinder
+from nltk.metrics import BigramAssocMeasures
+from nltk.corpus import stopwords
+import pymorphy2
+import pandas as pd
+import re
+
+nltk.download('punkt')  
+nltk.download('stopwords')  
+
+stopset = set(stopwords.words('russian'))
+morph = pymorphy2.MorphAnalyzer()
+bigram_measures = BigramAssocMeasures()
+
+root = TkinterDnD.Tk()
+root.geometry('1920x1080')
+
+context_size = tk.IntVar(value=5)  # Default context size
+collocation_count = tk.IntVar(value=10)  # Default collocation count
+main_window_size = tk.StringVar(value='1920x1080')  # Default main window size
+output_window_size = tk.StringVar(value='200x200')  # Default output window size
+
+def browse_file(): 
+    fname = askopenfilename(filetypes=[('Text Files', '*.txt')]) 
+    if fname:  # Make sure a file is selected
+        filename.set(fname)
+        display.insert(tk.END, f"File {filename.get()} has been loaded\n")
+        process_file()  # Process the file after it's loaded
+
+def drop(event):
+    filename.set(event.data)
+    display.insert(tk.END, f"File {filename.get()} has been loaded\n")
+    process_file()  # Process the file after it's dropped
+
+def process_file():
+    global context_df
+
+    with open(filename.get(), encoding='utf8') as f:
+        contents = f.read()
+    messagebox.showinfo("Processing", f"Processing file: {filename.get()}")  # Add this line
+    words_without_punct = nltk.word_tokenize(re.sub(r'\W', ' ', contents))
+    original_words = [word for word in words_without_punct if word.lower() not in stopset]
+    lemmatized_words = [morph.parse(word)[0].normal_form for word in original_words]
+    finder = BigramCollocationFinder.from_words(lemmatized_words)
+    collocations = finder.score_ngrams(bigram_measures.pmi)
+    collocations_df = pd.DataFrame(collocations, columns=['bigram', 'score'])
+
+    # Extracting context around each bigram
+    context_list = []
+    for _, row in collocations_df.iterrows():
+        bigram = row['bigram']
+        indices = [i for i, x in enumerate(lemmatized_words) if x == bigram[0] and i < len(lemmatized_words) - 1 and lemmatized_words[i+1] == bigram[1]]
+        for index in indices:
+            left = ' '.join(original_words[max(0, index-context_size.get()):index])
+            right = ' '.join(original_words[index+2:min(len(original_words), index+2+context_size.get())])
+            context_list.append((row['score'], bigram, f"{left} {' '.join(original_words[index:index+2])} {right}"))
+
+    context_df = pd.DataFrame(context_list, columns=['score', 'bigram', 'context'])
+
+    # Update the display
+    display.delete(1.0, tk.END)
+    top_collocations = context_df.sort_values(by='score', ascending=False).head(collocation_count.get())
+    display.insert(tk.END, top_collocations.to_string(index=False))
+
+def open_settings():
+    def save_settings():
+        # Ensure inputs are valid integers
+        try:
+            new_context_size = int(context_size_entry.get())
+            new_collocation_count = int(collocation_count_entry.get())
+        except ValueError:
+            tk.messagebox.showerror("Invalid Input", "Context size and collocation count must be integers.")
+            return
+
+        context_size.set(new_context_size)
+        collocation_count.set(new_collocation_count)
+
+        # Check for valid window sizes, in format "widthxheight"
+        if not re.match(r"^\d+x\d+$", main_window_size_entry.get()) or not re.match(r"^\d+x\d+$", output_window_size_entry.get()):
+            tk.messagebox.showerror("Invalid Input", "Window sizes must be in format \"widthxheight\".")
+            return
+
+        main_window_size.set(main_window_size_entry.get())
+        output_window_size.set(output_window_size_entry.get())
+
+        # Apply main window size
+        root.geometry(main_window_size.get())
+
+        # Apply output window size
+        width, height = map(int, output_window_size.get().split('x'))
+        display.config(width=width, height=height)
+
+        settings_window.destroy()
+
+    settings_window = tk.Toplevel(root)
+    settings_window.title("Settings")
+
+    context_size_label = tk.Label(settings_window, text="Context size:")
+    context_size_label.pack()
+    context_size_entry = tk.Entry(settings_window)
+    context_size_entry.insert(0, context_size.get())
+    context_size_entry.pack()
+
+    collocation_count_label = tk.Label(settings_window, text="Collocation count:")
+    collocation_count_label.pack()
+    collocation_count_entry = tk.Entry(settings_window)
+    collocation_count_entry.insert(0, collocation_count.get())
+    collocation_count_entry.pack()
+
+    main_window_size_label = tk.Label(settings_window, text="Main window size:")
+    main_window_size_label.pack()
+    main_window_size_entry = tk.Entry(settings_window)
+    main_window_size_entry.insert(0, main_window_size.get())
+    main_window_size_entry.pack()
+
+    output_window_size_label = tk.Label(settings_window, text="Output window size:")
+    output_window_size_label.pack()
+    output_window_size_entry = tk.Entry(settings_window)
+    output_window_size_entry.insert(0, output_window_size.get())
+    output_window_size_entry.pack()
+
+    save_button = tk.Button(settings_window, text="Save", command=save_settings)
+    save_button.pack()
+
+def save_to_xlsx():
+    global context_df
+    if context_df is None:
+        messagebox.showinfo("No Data", "No data to save. Please process a file first.")
+        return
+    save_path = filedialog.asksaveasfilename(defaultextension=".xlsx")
+    if save_path:
+        context_df.to_excel(save_path, index=False)
+        messagebox.showinfo("Saved Data", f"Data saved to {save_path}")
+    
+filename = tk.StringVar()
+
+drop_target = tk.Label(root, text='Drag and Drop file here')
+drop_target.pack()
+drop_target.drop_target_register(DND_FILES)
+drop_target.dnd_bind('<<Drop>>', drop)
+
+browse_button = tk.Button(root, text='Browse File', command=browse_file)
+browse_button.pack()
+
+# process_button = tk.Button(root, text='Process File', command=process_file)
+# process_button.pack()
+
+save_button = tk.Button(root, text='Save to .xlsx', command=save_to_xlsx)
+save_button.pack()
+
+settings_button = tk.Button(root, text='Settings', command=open_settings)
+settings_button.pack()
+
+display = scrolledtext.ScrolledText(root, width=200, height=200)
+display.pack()
+
+root.mainloop()
+
+
+# In[ ]:
+
+
+
+
